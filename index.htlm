@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>中学地理·3D褶皱｜背斜向斜地形倒置虚拟仿真</title>
+<style>
+*{box-sizing:border-box;font-family:"Microsoft YaHei",system-ui}
+body{margin:0;background:#f0f4f8;overflow:hidden}
+#info{position:absolute;top:12px;left:12px;background:#fff;padding:14px;border-radius:10px;box-shadow:0 3px 10px rgba(0,0,0,0.12);max-width:280px;z-index:10}
+#info h3{margin:0 0 8px 0;color:#222;font-size:16px}
+#info p{margin:4px 0;font-size:13px;color:#444;line-height:1.6}
+#control{position:absolute;top:12px;right:12px;background:#fff;padding:14px;border-radius:10px;box-shadow:0 3px 10px rgba(0,0,0,0.12);z-index:10;width:240px}
+button{width:100%;padding:8px;margin:4px 0;border:none;border-radius:6px;background:#2b78e4;color:#fff;font-size:14px;cursor:pointer}
+.speed-wrap{margin-top:8px;padding:6px 0}
+#speedText{font-size:13px;margin-bottom:4px;display:block}
+#speedSlider{width:100%}
+#tip{position:absolute;bottom:12px;left:12px;background:#fff;padding:10px;border-radius:8px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+#canvas-container{width:100vw;height:100vh}
+.label-anti{position:absolute;color:#111;font-weight:bold;font-size:24px;pointer-events:none}
+.label-syn{position:absolute;color:#111;font-weight:bold;font-size:24px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="info">
+<h3>📐3D褶皱构造（地形倒置）</h3>
+<p>✅背斜：岩层向上拱起｜核老翼新</p>
+<p>✅向斜：岩层向下弯曲｜核新翼老</p>
+<p>🔹阶段1：地壳水平挤压 → 形成褶皱</p>
+<p>🔹阶段2：外力侵蚀 → <strong>背斜成谷、向斜成山（地形倒置）</strong></p>
+<p>💡原理：背斜顶部受张力，裂隙发育易被侵蚀；向斜槽部受挤压，岩石坚硬不易被侵蚀</p>
+</div>
+<div id="control">
+<button id="btnExtrude">①地壳挤压·形成褶皱</button>
+<button id="btnErode">②外力侵蚀·地形倒置</button>
+<button id="btnPause">⏸️暂停动画</button>
+<button id="btnReset">↺重置岩层</button>
+<div class="speed-wrap">
+<span id="speedText">动画速度：1.00x</span>
+<input type="range" id="speedSlider" min="0.2" max="3" step="0.1" value="1">
+</div>
+</div>
+<div id="tip">🖱️鼠标拖拽旋转模型｜滚轮缩放视图｜可随时暂停、调节动画快慢</div>
+<div id="canvas-container"></div>
+<div class="label-anti" id="labelAnti" style="display:none">背斜</div>
+<div class="label-syn" id="labelSyn" style="display:none">向斜</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf5f7fa);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0,7,15);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+//光照
+const ambientLight = new THREE.AmbientLight(0xffffff,0.7);
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffffff,1.1);
+dirLight.position.set(8,14,7);
+dirLight.castShadow = true;
+scene.add(dirLight);
+
+const rockColors = [0x6b4b35,0x8b6b52,0xa88b6f,0xc9b296,0xe6d7c0];
+const layerGap = 0.75;
+let layerMeshes = [];
+
+const labelAntiDom = document.getElementById("labelAnti");
+const labelSynDom = document.getElementById("labelSyn");
+
+const maxFoldAmp = 2.8;
+const maxErodeCut = 2.2;
+let foldProgress = 0;
+let erodeProgress = 0;
+let animating = false;
+let isPaused = false;
+let stage = 0;
+let animSpeed = 1.0;
+
+//生成平直岩层
+function createStraightLayer(yOffset,color){
+    const geo = new THREE.PlaneGeometry(22,4.5,45,12);
+    const mat = new THREE.MeshLambertMaterial({color,side:THREE.DoubleSide});
+    const mesh = new THREE.Mesh(geo,mat);
+    mesh.rotation.x = -Math.PI/2;
+    mesh.position.y = yOffset;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+}
+
+//更新褶皱变形
+function updateGeometry(){
+    layerMeshes.forEach(mesh=>{
+        const posAttr = mesh.geometry.attributes.position;
+        for(let i=0;i<posAttr.count;i++){
+            const x = posAttr.getX(i);
+            const foldH = maxFoldAmp * foldProgress * Math.sin(x*0.42);
+            let erodeCut = 0;
+            if(erodeProgress>0){
+                const wave = Math.sin(x*0.42);
+                if(wave>0.45) erodeCut = maxErodeCut * erodeProgress * wave;
+            }
+            posAttr.setY(i, posAttr.getY(i) + foldH - erodeCut);
+        }
+        mesh.geometry.computeVertexNormals();
+        posAttr.needsUpdate = true;
+    })
+    updateDomLabelPos();
+}
+
+//更新背斜向斜文字标签屏幕位置
+function updateDomLabelPos(){
+    const antiWorldPos = new THREE.Vector3(0, maxFoldAmp*foldProgress + 1, 3.2);
+    antiWorldPos.project(camera);
+    labelAntiDom.style.left = ((antiWorldPos.x +1)/2 * window.innerWidth)+"px";
+    labelAntiDom.style.top = ((1 - antiWorldPos.y)/2 * window.innerHeight)+"px";
+
+    const synWorldPos = new THREE.Vector3(7.5, -maxFoldAmp*foldProgress +1,3.2);
+    synWorldPos.project(camera);
+    labelSynDom.style.left = ((synWorldPos.x +1)/2 * window.innerWidth)+"px";
+    labelSynDom.style.top = ((1 - synWorldPos.y)/2 * window.innerHeight)+"px";
+}
+
+//重建岩层（重置）
+function rebuildLayers(){
+    layerMeshes.forEach(m=>scene.remove(m));
+    layerMeshes = [];
+    rockColors.forEach((c,idx)=>{
+        const l = createStraightLayer(-idx*layerGap,c);
+        scene.add(l);
+        layerMeshes.push(l);
+    })
+    labelAntiDom.style.display = "none";
+    labelSynDom.style.display = "none";
+}
+
+//挤压褶皱动画
+function animateFold(){
+    animating = true;
+    isPaused = false;
+    const baseStep = 0.008;
+    const loop = ()=>{
+        if(isPaused){
+            requestAnimationFrame(loop);
+            return;
+        }
+        foldProgress += baseStep * animSpeed;
+        if(foldProgress>=1){
+            foldProgress =1;
+            animating = false;
+            stage = 1;
+            labelAntiDom.style.display = "block";
+            labelSynDom.style.display = "block";
+            return;
+        }
+        updateGeometry();
+        requestAnimationFrame(loop);
+    }
+    loop();
+}
+
+//侵蚀动画
+function animateErode(){
+    animating = true;
+    isPaused = false;
+    const baseStep = 0.007;
+    const loop = ()=>{
+        if(isPaused){
+            requestAnimationFrame(loop);
+            return;
+        }
+        erodeProgress += baseStep * animSpeed;
+        if(erodeProgress>=1){
+            erodeProgress =1;
+            animating = false;
+            stage =2;
+            labelAntiDom.style.display = "block";
+            labelSynDom.style.display = "block";
+            return;
+        }
+        updateGeometry();
+        requestAnimationFrame(loop);
+    }
+    loop();
+}
+
+//绑定按钮
+const btnExtrude = document.getElementById("btnExtrude");
+const btnErode = document.getElementById("btnErode");
+const btnPause = document.getElementById("btnPause");
+const btnReset = document.getElementById("btnReset");
+const speedSlider = document.getElementById("speedSlider");
+const speedText = document.getElementById("speedText");
+
+speedSlider.oninput = ()=>{
+    animSpeed = Number(speedSlider.value);
+    speedText.innerText = `动画速度：${animSpeed.toFixed(2)}x`;
+}
+
+btnExtrude.onclick = ()=>{
+    if(animating || stage!==0) return;
+    animateFold();
+}
+btnErode.onclick = ()=>{
+    if(animating || stage!==1) return;
+    animateErode();
+}
+btnPause.onclick = ()=>{
+    if(!animating) return;
+    isPaused = !isPaused;
+    btnPause.innerText = isPaused ? "▶️继续动画" : "⏸️暂停动画";
+}
+btnReset.onclick = ()=>{
+    animating = false;
+    isPaused = false;
+    foldProgress =0;
+    erodeProgress =0;
+    stage =0;
+    rebuildLayers();
+    btnPause.innerText = "⏸️暂停动画";
+}
+
+//底部底座
+const floorGeo = new THREE.PlaneGeometry(24,6);
+const floorMat = new THREE.MeshLambertMaterial({color:0xd8d8d8,side:THREE.DoubleSide});
+const floor = new THREE.Mesh(floorGeo,floorMat);
+floor.rotation.x = -Math.PI/2;
+floor.position.y = -rockColors.length*layerGap -1.4;
+floor.receiveShadow = true;
+scene.add(floor);
+
+//✅页面打开立刻初始化岩层（解决空白核心代码）
+rebuildLayers();
+
+function animate(){
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+})
+</script>
+</body>
+</html>
